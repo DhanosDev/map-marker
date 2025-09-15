@@ -1,4 +1,11 @@
-import { Component, inject, signal, computed, ViewChild } from '@angular/core';
+import {
+  Component,
+  inject,
+  signal,
+  computed,
+  ViewChild,
+  effect,
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule } from '@angular/router';
 import { MapStore } from '../../core/stores/map.store';
@@ -8,6 +15,7 @@ import {
   SearchInputComponent,
   SelectOption,
 } from './components/search-input.component';
+import { CollapsibleResultsTableComponent } from './components/collapsible-results-table.component';
 
 @Component({
   selector: 'app-location-map-page',
@@ -17,10 +25,11 @@ import {
     RouterModule,
     MapCanvasComponent,
     SearchInputComponent,
+    CollapsibleResultsTableComponent,
   ],
   template: `
     <div class="min-h-screen bg-gray-900 text-white">
-      <!-- Header (mantener igual) -->
+      <!-- Header -->
       <header class="p-4 border-b border-gray-700">
         <div class="container mx-auto flex items-center justify-between">
           <h1 class="text-xl font-bold">Postal Code Map</h1>
@@ -33,19 +42,7 @@ import {
         </div>
       </header>
 
-      <!-- Loading State (mantener igual) -->
-      <!-- @if (mapStore.isLoading()) {
-        <div class="flex items-center justify-center p-8">
-          <div class="text-center">
-            <div
-              class="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"
-            ></div>
-            <p class="text-gray-400">Loading...</p>
-          </div>
-        </div>
-      } -->
-
-      <!-- Error State (mantener igual) -->
+      <!-- Error State -->
       @if (mapStore.error()) {
         <div class="p-4">
           <div class="bg-red-900 border border-red-700 rounded-lg p-4">
@@ -63,7 +60,7 @@ import {
       <!-- Main Content -->
       <main class="container mx-auto p-4">
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <!-- Map Section - AGREGAR ViewChild reference y marker click handler -->
+          <!-- Map Section -->
           <div class="bg-gray-800 rounded-lg p-4">
             <h2 class="text-lg font-semibold mb-4">
               Map View
@@ -78,11 +75,11 @@ import {
             ></app-map-canvas>
           </div>
 
-          <!-- Controls & Results Section -->
+          <!-- Controls Section -->
           <div class="bg-gray-800 rounded-lg p-4">
             <h2 class="text-lg font-semibold mb-4">Search & Results</h2>
 
-            <!-- NEW SEARCH INPUT COMPONENT - Testing -->
+            <!-- Search Input Component -->
             <div class="mb-4">
               @if (!mapStore.hasSelectedCountry()) {
                 <!-- Country Selection -->
@@ -103,106 +100,21 @@ import {
                   [isLoading]="mapStore.isLoading()"
                   [selectedValue]="mapStore.selectedCity()?.name || ''"
                   (valueSelected)="onNewCitySelect($event)"
-                  (backClicked)="onBackToCountry()"
                 ></app-search-input>
-              }
-            </div>
-
-            <!-- OLD SELECTORS - Mantener temporalmente para comparación -->
-            <div class="mb-4 opacity-50">
-              <h3 class="text-sm font-medium mb-2">
-                Old Selectors (Reference)
-              </h3>
-              <!-- ... código existente de selectors ... -->
-            </div>
-            */
-
-            <!-- TABLA DE RESULTADOS - UPDATED con sync functionality -->
-            <div class="bg-gray-700 rounded p-3 min-h-[300px]">
-              @if (
-                mapStore.hasSelectedCity() && mapStore.postalCodes().length > 0
-              ) {
-                <!-- Header -->
-                <h3 class="font-medium mb-3">
-                  Postal Codes in {{ mapStore.selectedCity()?.name }}
-                  <span class="text-sm font-normal text-gray-400">
-                    ({{ mapStore.postalCodes().length }} total)
-                  </span>
-                </h3>
-
-                <!-- VIRTUAL SCROLL MANUAL con sync highlighting -->
-                <div class="h-80 overflow-y-auto" (scroll)="onScroll($event)">
-                  <div class="space-y-2">
-                    @for (
-                      code of visiblePostalCodes();
-                      track trackByPostalCode($index, code)
-                    ) {
-                      <div
-                        class="p-3 rounded cursor-pointer transition-colors"
-                        [class]="getRowClasses(code)"
-                        (click)="onPostalCodeClick(code)"
-                      >
-                        <div class="font-medium text-white">
-                          {{ code.postalCode }}
-                        </div>
-                        <div class="text-sm text-gray-300">
-                          {{ code.placeName }}
-                        </div>
-                        <div class="text-xs text-gray-400">
-                          {{ code.latitude.toFixed(4) }},
-                          {{ code.longitude.toFixed(4) }}
-                        </div>
-                        @if (code.region) {
-                          <div class="text-xs text-gray-500">
-                            {{ code.region }}
-                          </div>
-                        }
-                      </div>
-                    }
-                  </div>
-
-                  <!-- Load More Indicator -->
-                  @if (hasMore()) {
-                    <div class="text-center py-4">
-                      <span class="text-gray-400 text-sm">Loading more...</span>
-                    </div>
-                  }
-                </div>
-              } @else if (
-                mapStore.hasSelectedCountry() && !mapStore.hasSelectedCity()
-              ) {
-                <!-- Esperando selección de ciudad -->
-                <div class="text-center py-12">
-                  <p class="text-gray-400">
-                    Select a city to view postal codes
-                  </p>
-                  <p class="text-xs text-gray-500 mt-2">
-                    {{ mapStore.cities().length }} cities available in
-                    {{ mapStore.selectedCountry()?.name }}
-                  </p>
-                </div>
-              } @else if (!mapStore.hasSelectedCountry()) {
-                <!-- Estado inicial -->
-                <div class="text-center py-12">
-                  <p class="text-gray-400">Select a country to start</p>
-                </div>
-              } @else if (
-                mapStore.hasSelectedCity() &&
-                !mapStore.postalCodes().length &&
-                !mapStore.isLoading()
-              ) {
-                <!-- Sin datos -->
-                <div class="text-center py-12">
-                  <p class="text-gray-400">
-                    No postal codes found for
-                    {{ mapStore.selectedCity()?.name }}
-                  </p>
-                </div>
               }
             </div>
           </div>
         </div>
       </main>
+
+      <!-- COLLAPSIBLE TABLE - Angular 18 Best Practice Implementation -->
+      <app-collapsible-results-table
+        [postalCodes]="mapStore.postalCodes()"
+        [activeMarker]="mapStore.activeMarker()"
+        [isExpanded]="tableExpanded()"
+        (rowClicked)="onTableRowClick($event)"
+        (expandToggled)="onTableToggle($event)"
+      ></app-collapsible-results-table>
     </div>
   `,
 })
@@ -211,127 +123,50 @@ export class LocationMapPageComponent {
 
   @ViewChild('mapCanvas') mapCanvas!: MapCanvasComponent;
 
-  private readonly itemsPerPage = 50;
-  private readonly currentPage = signal(0);
+  // COMPUTED APPROACH: Auto-expand when data exists + manual toggle
+  private manualCollapsed = signal(false);
 
-  readonly visiblePostalCodes = computed(() => {
-    const allCodes = this.mapStore.postalCodes();
-    const page = this.currentPage();
-    return allCodes.slice(0, (page + 1) * this.itemsPerPage);
-  });
-
-  readonly hasMore = computed(() => {
-    return (
-      this.visiblePostalCodes().length < this.mapStore.postalCodes().length
-    );
+  tableExpanded = computed(() => {
+    const hasData = this.mapStore.postalCodes().length > 0;
+    return hasData && !this.manualCollapsed();
   });
 
   /**
    * Handle marker clicks - Sync from MAP to TABLE
    */
   onMarkerClick(postalCode: PostalCode): void {
+    console.log(
+      '🗺️ Marker clicked:',
+      postalCode.postalCode,
+      postalCode.placeName
+    );
     this.mapStore.setActiveMarker(postalCode);
-
-    this.scrollToPostalCode(postalCode);
   }
 
   /**
    * Handle table row clicks - Sync from TABLE to MAP
    */
-  onPostalCodeClick(postalCode: PostalCode): void {
+  onTableRowClick(postalCode: PostalCode): void {
+    console.log(
+      '📋 Collapsible table row clicked:',
+      postalCode.postalCode,
+      postalCode.placeName
+    );
+
+    // Set active marker
     this.mapStore.setActiveMarker(postalCode);
 
+    // Highlight marker on map
     if (this.mapCanvas) {
       this.mapCanvas.highlightMarker(postalCode);
     }
   }
 
   /**
-   * Get dynamic CSS classes for table rows based on selection state
+   * Handle table expand toggle
    */
-  getRowClasses(code: PostalCode): string {
-    const isActive = this.mapStore.activeMarker() === code;
-
-    if (isActive) {
-      return 'bg-blue-600 hover:bg-blue-500';
-    }
-
-    return 'bg-gray-600 hover:bg-gray-500';
-  }
-
-  private scrollToPostalCode(postalCode: PostalCode): void {
-    const allCodes = this.mapStore.postalCodes();
-    const index = allCodes.findIndex(
-      (code) =>
-        code.postalCode === postalCode.postalCode &&
-        code.latitude === postalCode.latitude
-    );
-
-    if (index !== -1) {
-      const currentVisible = this.visiblePostalCodes().length;
-      if (index >= currentVisible) {
-        const neededPage = Math.floor(index / this.itemsPerPage);
-        this.currentPage.set(neededPage);
-      }
-    }
-  }
-
-  onCountryChange(event: Event): void {
-    this.resetPagination();
-    const target = event.target as HTMLSelectElement;
-    const countryCode = target.value;
-
-    if (countryCode) {
-      const country = this.mapStore
-        .countries()
-        .find((c) => c.code === countryCode);
-      if (country) {
-        this.mapStore.selectCountry(country);
-      }
-    } else {
-      this.mapStore.clearSelection();
-    }
-  }
-
-  onCityChange(event: Event): void {
-    this.resetPagination();
-    const target = event.target as HTMLSelectElement;
-    const cityName = target.value;
-
-    if (cityName) {
-      const city = this.mapStore.cities().find((c) => c.name === cityName);
-      if (city) {
-        this.mapStore.selectCity(city);
-      }
-    } else {
-      this.mapStore.clearCitySelection();
-    }
-  }
-
-  onScroll(event: Event): void {
-    const element = event.target as HTMLElement;
-    const threshold = 100;
-
-    if (
-      element.scrollTop + element.clientHeight >=
-      element.scrollHeight - threshold
-    ) {
-      if (this.hasMore()) {
-        this.currentPage.update((page) => page + 1);
-      }
-    }
-  }
-
-  trackByPostalCode(index: number, item: any): string {
-    return `${item.postalCode}-${item.placeName}-${item.latitude}-${item.longitude}`;
-  }
-
-  private resetPagination(): void {
-    this.currentPage.set(0);
-  }
-
-  goBack(): void {
-    window.history.back();
+  onTableToggle(expanded: boolean): void {
+    this.manualCollapsed.set(!expanded);
   }
 
   countryOptions = computed((): SelectOption[] => {
@@ -341,46 +176,34 @@ export class LocationMapPageComponent {
     }));
   });
 
-  /**
-   * Transform cities to SelectOption format
-   */
   cityOptions = computed((): SelectOption[] => {
     return this.mapStore.cities().map((city) => ({
-      value: city.name, // ← ¿Esto coincide con selectedValue?
+      value: city.name,
       label: `${city.name} (${city.postalCount.toLocaleString()} codes)`,
     }));
   });
 
-  /**
-   * Handle new component country selection
-   */
   onNewCountrySelect(countryCode: string): void {
     const country = this.mapStore
       .countries()
       .find((c) => c.code === countryCode);
     if (country) {
       this.mapStore.selectCountry(country);
+      // Reset manual collapse when changing data
+      this.manualCollapsed.set(false);
     }
   }
 
-  /**
-   * Handle new component city selection
-   */
   onNewCitySelect(cityName: string): void {
     const city = this.mapStore.cities().find((c) => c.name === cityName);
-
     if (city) {
       this.mapStore.selectCity(city);
-    } else {
-      console.log('❌ City not found in cities array');
+      // Reset manual collapse when changing data
+      this.manualCollapsed.set(false);
     }
   }
 
-  /**
-   * Handle back to country selection
-   */
-  onBackToCountry(): void {
-    console.log('🆕 New component - Back to country');
-    this.mapStore.clearCitySelection();
+  goBack(): void {
+    window.history.back();
   }
 }
