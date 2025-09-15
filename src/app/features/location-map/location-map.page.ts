@@ -4,11 +4,20 @@ import { RouterModule } from '@angular/router';
 import { MapStore } from '../../core/stores/map.store';
 import { MapCanvasComponent } from './components/map-canvas.component';
 import { PostalCode } from '../../core/models/business.interfaces';
+import {
+  SearchInputComponent,
+  SelectOption,
+} from './components/search-input.component';
 
 @Component({
   selector: 'app-location-map-page',
   standalone: true,
-  imports: [CommonModule, RouterModule, MapCanvasComponent],
+  imports: [
+    CommonModule,
+    RouterModule,
+    MapCanvasComponent,
+    SearchInputComponent,
+  ],
   template: `
     <div class="min-h-screen bg-gray-900 text-white">
       <!-- Header (mantener igual) -->
@@ -25,7 +34,7 @@ import { PostalCode } from '../../core/models/business.interfaces';
       </header>
 
       <!-- Loading State (mantener igual) -->
-      @if (mapStore.isLoading()) {
+      <!-- @if (mapStore.isLoading()) {
         <div class="flex items-center justify-center p-8">
           <div class="text-center">
             <div
@@ -34,7 +43,7 @@ import { PostalCode } from '../../core/models/business.interfaces';
             <p class="text-gray-400">Loading...</p>
           </div>
         </div>
-      }
+      } -->
 
       <!-- Error State (mantener igual) -->
       @if (mapStore.error()) {
@@ -73,47 +82,40 @@ import { PostalCode } from '../../core/models/business.interfaces';
           <div class="bg-gray-800 rounded-lg p-4">
             <h2 class="text-lg font-semibold mb-4">Search & Results</h2>
 
-            <!-- Country Selector (mantener igual) -->
+            <!-- NEW SEARCH INPUT COMPONENT - Testing -->
             <div class="mb-4">
-              <label class="block text-sm font-medium mb-2"
-                >Select Country</label
-              >
-              <select
-                class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
-                [value]="mapStore.selectedCountry()?.code || ''"
-                (change)="onCountryChange($event)"
-              >
-                <option value="">Choose a country...</option>
-                @for (country of mapStore.countries(); track country.code) {
-                  <option [value]="country.code">
-                    {{ country.name }} ({{ country.count.toLocaleString() }}
-                    codes)
-                  </option>
-                }
-              </select>
+              @if (!mapStore.hasSelectedCountry()) {
+                <!-- Country Selection -->
+                <app-search-input
+                  type="country"
+                  [options]="countryOptions()"
+                  placeholder="Seleccionar País"
+                  [isLoading]="mapStore.isLoading()"
+                  [selectedValue]="mapStore.selectedCountry()?.code || ''"
+                  (valueSelected)="onNewCountrySelect($event)"
+                ></app-search-input>
+              } @else {
+                <!-- City Selection -->
+                <app-search-input
+                  type="city"
+                  [options]="cityOptions()"
+                  placeholder="Seleccionar Ciudad"
+                  [isLoading]="mapStore.isLoading()"
+                  [selectedValue]="mapStore.selectedCity()?.name || ''"
+                  (valueSelected)="onNewCitySelect($event)"
+                  (backClicked)="onBackToCountry()"
+                ></app-search-input>
+              }
             </div>
 
-            <!-- City Selector (mantener igual) -->
-            @if (mapStore.hasSelectedCountry()) {
-              <div class="mb-4">
-                <label class="block text-sm font-medium mb-2"
-                  >Select City</label
-                >
-                <select
-                  class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
-                  [value]="mapStore.selectedCity()?.name || ''"
-                  (change)="onCityChange($event)"
-                >
-                  <option value="">Choose a city...</option>
-                  @for (city of mapStore.cities(); track city.name) {
-                    <option [value]="city.name">
-                      {{ city.name }} ({{ city.postalCount.toLocaleString() }}
-                      codes)
-                    </option>
-                  }
-                </select>
-              </div>
-            }
+            <!-- OLD SELECTORS - Mantener temporalmente para comparación -->
+            <div class="mb-4 opacity-50">
+              <h3 class="text-sm font-medium mb-2">
+                Old Selectors (Reference)
+              </h3>
+              <!-- ... código existente de selectors ... -->
+            </div>
+            */
 
             <!-- TABLA DE RESULTADOS - UPDATED con sync functionality -->
             <div class="bg-gray-700 rounded p-3 min-h-[300px]">
@@ -228,12 +230,6 @@ export class LocationMapPageComponent {
    * Handle marker clicks - Sync from MAP to TABLE
    */
   onMarkerClick(postalCode: PostalCode): void {
-    console.log(
-      '🗺️ Marker clicked:',
-      postalCode.postalCode,
-      postalCode.placeName
-    );
-
     this.mapStore.setActiveMarker(postalCode);
 
     this.scrollToPostalCode(postalCode);
@@ -243,12 +239,6 @@ export class LocationMapPageComponent {
    * Handle table row clicks - Sync from TABLE to MAP
    */
   onPostalCodeClick(postalCode: PostalCode): void {
-    console.log(
-      '📋 Table row clicked:',
-      postalCode.postalCode,
-      postalCode.placeName
-    );
-
     this.mapStore.setActiveMarker(postalCode);
 
     if (this.mapCanvas) {
@@ -269,9 +259,6 @@ export class LocationMapPageComponent {
     return 'bg-gray-600 hover:bg-gray-500';
   }
 
-  /**
-   * Scroll table to show specific postal code (basic implementation)
-   */
   private scrollToPostalCode(postalCode: PostalCode): void {
     const allCodes = this.mapStore.postalCodes();
     const index = allCodes.findIndex(
@@ -345,5 +332,55 @@ export class LocationMapPageComponent {
 
   goBack(): void {
     window.history.back();
+  }
+
+  countryOptions = computed((): SelectOption[] => {
+    return this.mapStore.countries().map((country) => ({
+      value: country.code,
+      label: `${country.name} (${country.count.toLocaleString()} codes)`,
+    }));
+  });
+
+  /**
+   * Transform cities to SelectOption format
+   */
+  cityOptions = computed((): SelectOption[] => {
+    return this.mapStore.cities().map((city) => ({
+      value: city.name, // ← ¿Esto coincide con selectedValue?
+      label: `${city.name} (${city.postalCount.toLocaleString()} codes)`,
+    }));
+  });
+
+  /**
+   * Handle new component country selection
+   */
+  onNewCountrySelect(countryCode: string): void {
+    const country = this.mapStore
+      .countries()
+      .find((c) => c.code === countryCode);
+    if (country) {
+      this.mapStore.selectCountry(country);
+    }
+  }
+
+  /**
+   * Handle new component city selection
+   */
+  onNewCitySelect(cityName: string): void {
+    const city = this.mapStore.cities().find((c) => c.name === cityName);
+
+    if (city) {
+      this.mapStore.selectCity(city);
+    } else {
+      console.log('❌ City not found in cities array');
+    }
+  }
+
+  /**
+   * Handle back to country selection
+   */
+  onBackToCountry(): void {
+    console.log('🆕 New component - Back to country');
+    this.mapStore.clearCitySelection();
   }
 }

@@ -107,7 +107,6 @@ export class MapStore {
 
     this.activeMarker.set(null);
     this.clearSearch();
-
     this.loadPostalCodesForCity(city.countryCode, city.name);
   }
 
