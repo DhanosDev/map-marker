@@ -127,11 +127,6 @@ export class MapStore {
 
   setActiveMarker(postalCode: PostalCode | null): void {
     this.activeMarker.set(postalCode);
-    if (postalCode) {
-      console.log(
-        `📍 Active marker: ${postalCode.postalCode} - ${postalCode.placeName}`
-      );
-    }
   }
 
   updateSearchQuery(query: string): void {

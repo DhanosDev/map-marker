@@ -8,7 +8,7 @@ import { PostalCode } from '../../../core/models/business.interfaces';
   imports: [CommonModule],
   template: `
     @if (postalCodes().length > 0) {
-      <div class="fixed bottom-0 left-0 right-0">
+      <div class="fixed bottom-0 left-0 right-0 z-50">
         <!-- Handle - SIEMPRE VISIBLE -->
         <div class="pt-3 pb-2 bg-table-country">
           <button
@@ -52,7 +52,7 @@ import { PostalCode } from '../../../core/models/business.interfaces';
               ) {
                 <div
                   class="grid grid-cols-5 items-center text-center font-roboto text-sm py-2 border-b border-gray-200 last:border-b-0 cursor-pointer"
-                  [class.bg-blue-600]="code === activeMarker()"
+                  [class.bg-gray-200]="code === activeMarker()"
                   [class.text-white]="code === activeMarker()"
                   [class.hover:bg-gray-100]="code !== activeMarker()"
                   (click)="onRowClick(code)"

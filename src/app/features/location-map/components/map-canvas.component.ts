@@ -10,6 +10,7 @@ import {
   signal,
   computed,
   effect,
+  inject,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
@@ -20,18 +21,17 @@ import {
   createMarkersGroup,
   MapMarker,
 } from '../../../core/utils/map-markers.util';
+import { MapStore } from '../../../core/stores/map.store';
 
 @Component({
   selector: 'app-map-canvas',
   standalone: true,
   imports: [CommonModule],
   template: `
-    <div class="map-container">
-      <div #mapContainer id="map" class="w-full h-full"></div>
-
+    <div #mapContainer id="leaflet-map" class="absolute inset-0 w-full h-full">
       @if (isLoading()) {
         <div
-          class="absolute inset-0 bg-gray-900/50 flex items-center justify-center"
+          class="absolute inset-0 bg-gray-900/50 flex items-center justify-center z-50"
         >
           <div class="text-white">Loading map...</div>
         </div>
@@ -39,7 +39,7 @@ import {
 
       @if (mapError()) {
         <div
-          class="absolute inset-0 bg-red-900/80 flex items-center justify-center"
+          class="absolute inset-0 bg-red-900/80 flex items-center justify-center z-50"
         >
           <div class="text-center text-white">
             <p class="mb-2">Map failed to load</p>
@@ -58,105 +58,60 @@ import {
     `
       :host {
         display: block;
-        position: relative;
-      }
-
-      .map-container {
-        position: relative;
-        height: 400px;
         width: 100%;
-        border-radius: 0.5rem;
-        overflow: hidden;
-      }
-
-      @media (min-width: 768px) {
-        .map-container {
-          height: 500px;
-        }
+        height: 100%;
       }
     `,
   ],
 })
 export class MapCanvasComponent implements AfterViewInit, OnDestroy {
-  // ========================================
-  // PUBLIC API - INPUTS & OUTPUTS
-  // ========================================
-
   @Input() postalCodes = signal<PostalCode[]>([]);
   @Output() markerClicked = new EventEmitter<PostalCode>();
 
-  // ========================================
-  // COMPONENT STATE - REACTIVE SIGNALS
-  // ========================================
+  private readonly mapStore = inject(MapStore);
 
   readonly isLoading = signal<boolean>(true);
   readonly mapError = signal<string | null>(null);
   private readonly selectedMarkerId = signal<string | null>(null);
 
-  // ========================================
-  // COMPUTED VALUES - DERIVED STATE
-  // ========================================
-
-  private readonly markers = computed(() => {
-    const codes = this.postalCodes();
-    if (!codes || codes.length === 0) {
-      return [];
-    }
-
-    try {
-      return createMarkersGroup(codes);
-    } catch (error) {
-      console.error('Failed to create markers group:', error);
-      return [];
-    }
-  });
-
-  // ========================================
-  // COMPONENT REFERENCES
-  // ========================================
+  private readonly postalCodesData = computed(() => this.postalCodes());
+  private readonly selectedMarker = computed(() =>
+    this.mapStore.activeMarker()
+  );
 
   @ViewChild('mapContainer', { static: true })
   private readonly mapContainer!: ElementRef<HTMLElement>;
 
-  // ========================================
-  // LEAFLET STATE - MAP MANAGEMENT
-  // ========================================
-
   private map: L.Map | null = null;
   private markersGroup: L.LayerGroup | null = null;
   private currentMarkers: MapMarker[] = [];
-  private resizeListener: (() => void) | null = null;
-
-  // ========================================
-  // ANGULAR LIFECYCLE
-  // ========================================
 
   constructor() {
-    // Effect para reactive marker updates
     effect(() => {
-      const newMarkers = this.markers();
-      this.updateMapMarkers(newMarkers);
+      const codes = this.postalCodesData();
+      if (this.map && codes.length > 0) {
+        this.recreateMarkers(codes);
+      }
+    });
+
+    effect(() => {
+      const activeMarker = this.selectedMarker();
+      if (this.map && this.currentMarkers.length > 0) {
+        this.updateMarkerSelection(activeMarker);
+      }
     });
   }
 
   ngAfterViewInit(): void {
-    // Delay para asegurar DOM rendering
     setTimeout(() => {
       this.initializeMap();
-    }, 0);
+    }, 100);
   }
 
   ngOnDestroy(): void {
     this.cleanup();
   }
 
-  // ========================================
-  // PUBLIC METHODS - COMPONENT API
-  // ========================================
-
-  /**
-   * Highlight specific marker on map and center view
-   */
   highlightMarker(postalCode: PostalCode): void {
     if (!this.map || !postalCode) {
       console.warn(
@@ -166,24 +121,16 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
     }
 
     const marker = this.findMarkerByPostalCode(postalCode);
-
     if (marker) {
-      this.map.setView([postalCode.latitude, postalCode.longitude], 12);
-      marker.marker.openPopup();
-      this.selectedMarkerId.set(marker.id);
+      this.map.setView([postalCode.latitude, postalCode.longitude], 10);
 
-      console.log('✅ Marker highlighted:', postalCode.postalCode);
-    } else {
-      console.warn(
-        '❌ Marker not found for postal code:',
-        postalCode.postalCode
-      );
+      marker.marker.openPopup();
+
+      const markerId = `${postalCode.postalCode}-${postalCode.latitude}-${postalCode.longitude}`;
+      this.selectedMarkerId.set(markerId);
     }
   }
 
-  /**
-   * Retry map initialization after error
-   */
   retryMapInitialization(): void {
     this.mapError.set(null);
     this.isLoading.set(true);
@@ -194,94 +141,168 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
     }, 100);
   }
 
-  // ========================================
-  // PRIVATE METHODS - MAP MANAGEMENT
-  // ========================================
-
   private initializeMap(): void {
     try {
-      this.validateMapContainer();
+      this.validateContainer();
+      this.cleanupExistingMap();
       this.createMap();
       this.addTileLayer();
-      this.setupResponsiveHandling();
+      this.setupMapEvents();
 
       this.isLoading.set(false);
       this.mapError.set(null);
 
-      console.log('✅ Map initialized successfully');
+      console.log('Map initialized successfully');
     } catch (error) {
       this.handleMapError('Map initialization failed', error);
     }
   }
 
-  private validateMapContainer(): void {
-    if (!this.mapContainer?.nativeElement) {
+  private validateContainer(): void {
+    const container = this.mapContainer?.nativeElement;
+    if (!container) {
       throw new Error('Map container element not available');
     }
   }
 
+  private cleanupExistingMap(): void {
+    const container = this.mapContainer.nativeElement;
+
+    if (container && (container as any)._leaflet_id) {
+      if (this.map) {
+        this.map.remove();
+        this.map = null;
+      }
+
+      container.innerHTML = '';
+      delete (container as any)._leaflet_id;
+    }
+  }
+
   private createMap(): void {
-    this.map = L.map(this.mapContainer.nativeElement, {
-      center: [0, 0],
-      zoom: 2,
-      zoomControl: true,
+    const container = this.mapContainer.nativeElement;
+
+    this.map = L.map(container, {
+      zoomControl: false,
       attributionControl: true,
-      preferCanvas: true, // Performance optimization
+      preferCanvas: true,
+      maxBounds: [
+        [-90, -180],
+        [90, 180],
+      ],
+      maxBoundsViscosity: 1.0,
+      center: [20, 0],
+      zoom: 2,
+      minZoom: 2,
+      maxZoom: 18,
     });
+
+    this.map.fitWorld();
   }
 
   private addTileLayer(): void {
     if (!this.map) return;
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap contributors',
+      attribution:
+        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       maxZoom: 18,
       tileSize: 256,
       zoomOffset: 0,
-      detectRetina: true, // Better display on high-DPI screens
     }).addTo(this.map);
   }
 
-  private setupResponsiveHandling(): void {
+  private setupMapEvents(): void {
     if (!this.map) return;
 
-    // Responsive resize handler
-    this.resizeListener = () => {
+    const resizeHandler = () => {
       setTimeout(() => {
-        this.map?.invalidateSize();
+        if (this.map) {
+          this.map.invalidateSize();
+        }
       }, 100);
     };
 
-    window.addEventListener('resize', this.resizeListener);
-
-    // Mobile-specific initial zoom
-    if (window.innerWidth < 768) {
-      this.map.setView([0, 0], 1);
-    }
+    window.addEventListener('resize', resizeHandler);
+    (this.map as any)._resizeHandler = resizeHandler;
   }
 
-  // ========================================
-  // PRIVATE METHODS - MARKERS MANAGEMENT
-  // ========================================
-
-  private updateMapMarkers(newMarkers: MapMarker[]): void {
-    if (!this.map) {
-      console.log('⏳ Map not ready, skipping markers update');
-      return;
-    }
+  private recreateMarkers(postalCodes: PostalCode[]): void {
+    if (!this.map) return;
 
     try {
-      this.clearExistingMarkers();
-      this.addNewMarkers(newMarkers);
-      this.fitMapBounds(newMarkers);
+      this.clearMarkers();
 
-      console.log(`✅ Updated map with ${newMarkers.length} markers`);
+      if (postalCodes.length === 0) return;
+
+      const newMarkers = createMarkersGroup(postalCodes);
+      this.addMarkers(newMarkers);
+      this.fitMarkerBounds(newMarkers);
     } catch (error) {
-      console.error('❌ Failed to update markers:', error);
+      console.error('Failed to recreate markers:', error);
     }
   }
 
-  private clearExistingMarkers(): void {
+  private updateMarkerSelection(activeMarker: PostalCode | null): void {
+    if (!this.currentMarkers.length) return;
+
+    this.currentMarkers.forEach(({ marker, postalCode }) => {
+      const isSelected =
+        activeMarker &&
+        activeMarker.postalCode === postalCode.postalCode &&
+        activeMarker.latitude === postalCode.latitude &&
+        activeMarker.longitude === postalCode.longitude;
+
+      this.updateMarkerIcon(marker, postalCode, isSelected || false);
+    });
+  }
+
+  private updateMarkerIcon(
+    marker: L.Marker,
+    postalCode: PostalCode,
+    isSelected: boolean
+  ): void {
+    const icon = isSelected
+      ? this.createSelectedIcon()
+      : this.createNormalIcon();
+    marker.setIcon(icon);
+  }
+
+  private createNormalIcon(): L.Icon {
+    return L.icon({
+      iconUrl:
+        'data:image/svg+xml;base64,' +
+        btoa(`
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="9.96539" cy="9.96539" r="9.96539" fill="white"/>
+          <circle cx="9.96563" cy="9.9651" r="6.6436" fill="#FF0000"/>
+        </svg>
+      `),
+      iconSize: [20, 20],
+      iconAnchor: [10, 10],
+      popupAnchor: [0, -10],
+    });
+  }
+
+  private createSelectedIcon(): L.DivIcon {
+    return L.divIcon({
+      className: 'selected-marker-container',
+      html: `
+        <div class="marker-selected">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="9.96539" cy="9.96539" r="9.96539" fill="white"/>
+            <circle cx="9.96563" cy="9.9651" r="6.6436" fill="#68E9CF"/>
+          </svg>
+          <div class="pulse-ring"></div>
+          <div class="pulse-ring pulse-ring-delay"></div>
+        </div>
+      `,
+      iconSize: [20, 20],
+      iconAnchor: [10, 10],
+    });
+  }
+
+  private clearMarkers(): void {
     if (this.markersGroup && this.map) {
       this.map.removeLayer(this.markersGroup);
     }
@@ -289,49 +310,44 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
     this.currentMarkers = [];
   }
 
-  private addNewMarkers(newMarkers: MapMarker[]): void {
+  private addMarkers(newMarkers: MapMarker[]): void {
     if (!newMarkers?.length || !this.map) return;
 
     this.markersGroup = L.layerGroup();
     this.currentMarkers = newMarkers;
 
-    newMarkers.forEach(({ marker, id, postalCode }) => {
-      this.setupMarkerEvents(marker, id, postalCode);
+    newMarkers.forEach(({ marker, postalCode }) => {
+      marker.on('click', (e) => {
+        e.originalEvent?.stopPropagation();
+
+        if (this.map) {
+          this.map.setView([postalCode.latitude, postalCode.longitude], 10);
+        }
+
+        this.mapStore.setActiveMarker(postalCode);
+
+        this.markerClicked.emit(postalCode);
+      });
+
       this.markersGroup!.addLayer(marker);
     });
 
     this.markersGroup.addTo(this.map);
   }
 
-  private setupMarkerEvents(
-    marker: L.Marker,
-    id: string,
-    postalCode: PostalCode
-  ): void {
-    marker.on('click', () => {
-      this.selectedMarkerId.set(id);
-      this.markerClicked.emit(postalCode);
-      console.log('🎯 Marker clicked:', postalCode.postalCode);
-    });
-  }
-
-  private fitMapBounds(markers: MapMarker[]): void {
+  private fitMarkerBounds(markers: MapMarker[]): void {
     if (!markers?.length || !this.map) return;
 
     try {
       const group = new L.FeatureGroup(markers.map((m) => m.marker));
       this.map.fitBounds(group.getBounds(), {
-        padding: [10, 10],
-        maxZoom: 10, // Prevent excessive zoom on single markers
+        padding: [20, 20],
+        maxZoom: 10,
       });
     } catch (error) {
-      console.warn('Could not fit map bounds:', error);
+      console.warn('Could not fit marker bounds:', error);
     }
   }
-
-  // ========================================
-  // PRIVATE METHODS - UTILITIES
-  // ========================================
 
   private findMarkerByPostalCode(
     postalCode: PostalCode
@@ -345,25 +361,21 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
   }
 
   private handleMapError(message: string, error: unknown): void {
-    console.error(`❌ ${message}:`, error);
+    console.error(`${message}:`, error);
     this.mapError.set(message);
     this.isLoading.set(false);
   }
 
   private cleanup(): void {
-    // Remove event listeners
-    if (this.resizeListener) {
-      window.removeEventListener('resize', this.resizeListener);
-      this.resizeListener = null;
+    if (this.map && (this.map as any)._resizeHandler) {
+      window.removeEventListener('resize', (this.map as any)._resizeHandler);
     }
 
-    // Clean up map
     if (this.map) {
       this.map.remove();
       this.map = null;
     }
 
-    // Reset state
     this.markersGroup = null;
     this.currentMarkers = [];
   }

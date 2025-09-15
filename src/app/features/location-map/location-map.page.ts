@@ -28,27 +28,85 @@ import { CollapsibleResultsTableComponent } from './components/collapsible-resul
     CollapsibleResultsTableComponent,
   ],
   template: `
-    <div class="min-h-screen bg-gray-900 text-white">
-      <!-- Header -->
-      <header class="p-4 border-b border-gray-700">
-        <div class="container mx-auto flex items-center justify-between">
-          <h1 class="text-xl font-bold">Postal Code Map</h1>
-          <button
-            class="text-gray-300 hover:text-white transition-colors"
-            (click)="goBack()"
+    <div class="h-screen overflow-hidden relative">
+      <!-- MAP BACKGROUND (z-10) -->
+      <app-map-canvas
+        #mapCanvas
+        class="absolute inset-0 z-10 h-screen w-screen"
+        [postalCodes]="mapStore.postalCodes"
+        (markerClicked)="onMarkerClick($event)"
+      ></app-map-canvas>
+
+      <!-- HEADER OVERLAY (z-40) -->
+      <header class="fixed top-0 left-0 right-0 z-40 bg-transparent">
+        <div class="flex items-center justify-between px-7 pt-4 pb-2">
+          @if (mapStore.selectedCountry()) {
+            <button
+              class="w-11 h-11 rounded-full bg-transparent flex items-center justify-center cursor-pointer shadow-[0_-20px_50px_rgba(43,52,69,0.5),0_20px_30px_rgba(16,20,28,1.0)] border border-white border-opacity-20"
+              (click)="onBackClick()"
+              aria-label="Go back"
+            >
+              <svg
+                width="10"
+                height="16"
+                viewBox="0 0 10 16"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M0.511718 8C0.520507 8.30762 0.634765 8.58887 0.880859 8.81738L7.71875 15.4971C7.91211 15.6904 8.1582 15.7959 8.44824 15.7959C9.02832 15.7959 9.49414 15.3389 9.49414 14.7588C9.49414 14.4775 9.37988 14.2051 9.17773 14.0029L3.0166 8.00879L9.17773 1.99707C9.37109 1.79492 9.49414 1.53125 9.49414 1.24121C9.49414 0.661133 9.02832 0.204102 8.44824 0.204102C8.1582 0.204102 7.91211 0.30957 7.71875 0.50293L0.880859 7.19141C0.634765 7.42871 0.511718 7.69238 0.511718 8Z"
+                  fill="white"
+                />
+              </svg>
+            </button>
+          }
+
+          <h1
+            class="text-white font-bold text-center flex-1 font-roboto text-[25px] tracking-[-0.3px]"
           >
-            ← Back
-          </button>
+            {{ mapStore.selectedCountry()?.name || 'Ubicación' }}
+          </h1>
+
+          @if (mapStore.selectedCountry()) {
+            <div class="w-11"></div>
+          }
         </div>
       </header>
 
-      <!-- Error State -->
+      <!-- SEARCH OVERLAY (z-60) -->
+      <div class="fixed left-0 right-0 top-16 px-7 pt-[14px] z-[60]">
+        @if (!mapStore.hasSelectedCountry()) {
+          <app-search-input
+            type="country"
+            [options]="countryOptions()"
+            placeholder="Seleccionar País"
+            [isLoading]="mapStore.isLoading()"
+            [selectedValue]="mapStore.selectedCountry()?.code || ''"
+            (valueSelected)="onNewCountrySelect($event)"
+          ></app-search-input>
+        } @else {
+          <app-search-input
+            type="city"
+            [options]="cityOptions()"
+            placeholder="Seleccionar Ciudad"
+            [isLoading]="mapStore.isLoading()"
+            [selectedValue]="mapStore.selectedCity()?.name || ''"
+            (valueSelected)="onNewCitySelect($event)"
+          ></app-search-input>
+        }
+      </div>
+
+      <!-- ERROR OVERLAY (z-70) -->
       @if (mapStore.error()) {
-        <div class="p-4">
-          <div class="bg-red-900 border border-red-700 rounded-lg p-4">
-            <p class="text-red-200">{{ mapStore.error() }}</p>
+        <div
+          class="fixed inset-0 flex items-center justify-center z-[70] bg-black bg-opacity-50"
+        >
+          <div
+            class="bg-red-900 border border-red-700 rounded-lg p-6 mx-4 max-w-sm"
+          >
+            <p class="text-red-200 mb-4">{{ mapStore.error() }}</p>
             <button
-              class="mt-2 bg-red-700 hover:bg-red-600 px-4 py-2 rounded transition-colors"
+              class="w-full bg-red-700 hover:bg-red-600 px-4 py-2 rounded transition-colors text-white font-medium"
               (click)="mapStore.loadCountries()"
             >
               Retry
@@ -57,57 +115,7 @@ import { CollapsibleResultsTableComponent } from './components/collapsible-resul
         </div>
       }
 
-      <!-- Main Content -->
-      <main class="container mx-auto p-4">
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <!-- Map Section -->
-          <div class="bg-gray-800 rounded-lg p-4">
-            <h2 class="text-lg font-semibold mb-4">
-              Map View
-              @if (mapStore.isLoading()) {
-                <span class="text-sm text-gray-400">(Loading...)</span>
-              }
-            </h2>
-            <app-map-canvas
-              #mapCanvas
-              [postalCodes]="mapStore.postalCodes"
-              (markerClicked)="onMarkerClick($event)"
-            ></app-map-canvas>
-          </div>
-
-          <!-- Controls Section -->
-          <div class="bg-gray-800 rounded-lg p-4">
-            <h2 class="text-lg font-semibold mb-4">Search & Results</h2>
-
-            <!-- Search Input Component -->
-            <div class="mb-4">
-              @if (!mapStore.hasSelectedCountry()) {
-                <!-- Country Selection -->
-                <app-search-input
-                  type="country"
-                  [options]="countryOptions()"
-                  placeholder="Seleccionar País"
-                  [isLoading]="mapStore.isLoading()"
-                  [selectedValue]="mapStore.selectedCountry()?.code || ''"
-                  (valueSelected)="onNewCountrySelect($event)"
-                ></app-search-input>
-              } @else {
-                <!-- City Selection -->
-                <app-search-input
-                  type="city"
-                  [options]="cityOptions()"
-                  placeholder="Seleccionar Ciudad"
-                  [isLoading]="mapStore.isLoading()"
-                  [selectedValue]="mapStore.selectedCity()?.name || ''"
-                  (valueSelected)="onNewCitySelect($event)"
-                ></app-search-input>
-              }
-            </div>
-          </div>
-        </div>
-      </main>
-
-      <!-- COLLAPSIBLE TABLE - Angular 18 Best Practice Implementation -->
+      <!-- TABLE OVERLAY (z-50) -->
       <app-collapsible-results-table
         [postalCodes]="mapStore.postalCodes()"
         [activeMarker]="mapStore.activeMarker()"
@@ -123,7 +131,6 @@ export class LocationMapPageComponent {
 
   @ViewChild('mapCanvas') mapCanvas!: MapCanvasComponent;
 
-  // COMPUTED APPROACH: Auto-expand when data exists + manual toggle
   private manualCollapsed = signal(false);
 
   tableExpanded = computed(() => {
@@ -131,40 +138,23 @@ export class LocationMapPageComponent {
     return hasData && !this.manualCollapsed();
   });
 
-  /**
-   * Handle marker clicks - Sync from MAP to TABLE
-   */
+  onBackClick(): void {
+    this.mapStore.clearSelection();
+    this.manualCollapsed.set(false);
+  }
+
   onMarkerClick(postalCode: PostalCode): void {
-    console.log(
-      '🗺️ Marker clicked:',
-      postalCode.postalCode,
-      postalCode.placeName
-    );
     this.mapStore.setActiveMarker(postalCode);
   }
 
-  /**
-   * Handle table row clicks - Sync from TABLE to MAP
-   */
   onTableRowClick(postalCode: PostalCode): void {
-    console.log(
-      '📋 Collapsible table row clicked:',
-      postalCode.postalCode,
-      postalCode.placeName
-    );
-
-    // Set active marker
     this.mapStore.setActiveMarker(postalCode);
 
-    // Highlight marker on map
     if (this.mapCanvas) {
       this.mapCanvas.highlightMarker(postalCode);
     }
   }
 
-  /**
-   * Handle table expand toggle
-   */
   onTableToggle(expanded: boolean): void {
     this.manualCollapsed.set(!expanded);
   }
@@ -189,7 +179,6 @@ export class LocationMapPageComponent {
       .find((c) => c.code === countryCode);
     if (country) {
       this.mapStore.selectCountry(country);
-      // Reset manual collapse when changing data
       this.manualCollapsed.set(false);
     }
   }
@@ -198,12 +187,7 @@ export class LocationMapPageComponent {
     const city = this.mapStore.cities().find((c) => c.name === cityName);
     if (city) {
       this.mapStore.selectCity(city);
-      // Reset manual collapse when changing data
       this.manualCollapsed.set(false);
     }
-  }
-
-  goBack(): void {
-    window.history.back();
   }
 }
