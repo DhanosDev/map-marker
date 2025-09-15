@@ -1,15 +1,17 @@
-import { Component, inject, signal, computed } from '@angular/core';
+import { Component, inject, signal, computed, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule } from '@angular/router';
 import { MapStore } from '../../core/stores/map.store';
+import { MapCanvasComponent } from './components/map-canvas.component';
+import { PostalCode } from '../../core/models/business.interfaces';
 
 @Component({
   selector: 'app-location-map-page',
   standalone: true,
-  imports: [CommonModule, RouterModule],
+  imports: [CommonModule, RouterModule, MapCanvasComponent],
   template: `
     <div class="min-h-screen bg-gray-900 text-white">
-      <!-- Header -->
+      <!-- Header (mantener igual) -->
       <header class="p-4 border-b border-gray-700">
         <div class="container mx-auto flex items-center justify-between">
           <h1 class="text-xl font-bold">Postal Code Map</h1>
@@ -22,7 +24,7 @@ import { MapStore } from '../../core/stores/map.store';
         </div>
       </header>
 
-      <!-- Loading State -->
+      <!-- Loading State (mantener igual) -->
       @if (mapStore.isLoading()) {
         <div class="flex items-center justify-center p-8">
           <div class="text-center">
@@ -34,7 +36,7 @@ import { MapStore } from '../../core/stores/map.store';
         </div>
       }
 
-      <!-- Error State -->
+      <!-- Error State (mantener igual) -->
       @if (mapStore.error()) {
         <div class="p-4">
           <div class="bg-red-900 border border-red-700 rounded-lg p-4">
@@ -52,45 +54,26 @@ import { MapStore } from '../../core/stores/map.store';
       <!-- Main Content -->
       <main class="container mx-auto p-4">
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <!-- Map Section -->
-          <div class="bg-gray-800 rounded-lg p-4 min-h-[400px]">
-            <h2 class="text-lg font-semibold mb-4">Map View</h2>
-
-            <div
-              class="bg-gray-700 rounded h-80 flex items-center justify-center"
-            >
-              @if (
-                mapStore.hasSelectedCity() && mapStore.postalCodes().length > 0
-              ) {
-                <div class="text-center">
-                  <span class="text-green-400 block text-lg">
-                    Map will render {{ mapStore.postalCodes().length }} markers
-                  </span>
-                  <span class="text-xs text-gray-400 mt-2 block">
-                    {{ mapStore.selectedCity()?.name }},
-                    {{ mapStore.selectedCountry()?.name }}
-                  </span>
-                </div>
-              } @else if (mapStore.hasSelectedCountry()) {
-                <div class="text-center">
-                  <span class="text-blue-400 block">
-                    Select a city to view postal codes
-                  </span>
-                  <span class="text-xs text-gray-400 mt-2 block">
-                    {{ mapStore.cities().length }} cities available
-                  </span>
-                </div>
-              } @else {
-                <span class="text-gray-400">Select a country to start</span>
+          <!-- Map Section - AGREGAR ViewChild reference y marker click handler -->
+          <div class="bg-gray-800 rounded-lg p-4">
+            <h2 class="text-lg font-semibold mb-4">
+              Map View
+              @if (mapStore.isLoading()) {
+                <span class="text-sm text-gray-400">(Loading...)</span>
               }
-            </div>
+            </h2>
+            <app-map-canvas
+              #mapCanvas
+              [postalCodes]="mapStore.postalCodes"
+              (markerClicked)="onMarkerClick($event)"
+            ></app-map-canvas>
           </div>
 
           <!-- Controls & Results Section -->
           <div class="bg-gray-800 rounded-lg p-4">
             <h2 class="text-lg font-semibold mb-4">Search & Results</h2>
 
-            <!-- Country Selector -->
+            <!-- Country Selector (mantener igual) -->
             <div class="mb-4">
               <label class="block text-sm font-medium mb-2"
                 >Select Country</label
@@ -110,7 +93,7 @@ import { MapStore } from '../../core/stores/map.store';
               </select>
             </div>
 
-            <!-- City Selector -->
+            <!-- City Selector (mantener igual) -->
             @if (mapStore.hasSelectedCountry()) {
               <div class="mb-4">
                 <label class="block text-sm font-medium mb-2"
@@ -132,7 +115,7 @@ import { MapStore } from '../../core/stores/map.store';
               </div>
             }
 
-            <!-- TABLA DE RESULTADOS - SOLO POSTAL CODES -->
+            <!-- TABLA DE RESULTADOS - UPDATED con sync functionality -->
             <div class="bg-gray-700 rounded p-3 min-h-[300px]">
               @if (
                 mapStore.hasSelectedCity() && mapStore.postalCodes().length > 0
@@ -145,7 +128,7 @@ import { MapStore } from '../../core/stores/map.store';
                   </span>
                 </h3>
 
-                <!-- VIRTUAL SCROLL MANUAL -->
+                <!-- VIRTUAL SCROLL MANUAL con sync highlighting -->
                 <div class="h-80 overflow-y-auto" (scroll)="onScroll($event)">
                   <div class="space-y-2">
                     @for (
@@ -153,12 +136,9 @@ import { MapStore } from '../../core/stores/map.store';
                       track trackByPostalCode($index, code)
                     ) {
                       <div
-                        class="p-3 bg-gray-600 rounded cursor-pointer hover:bg-gray-500 transition-colors"
-                        [class.bg-blue-600]="mapStore.activeMarker() === code"
-                        [class.hover:bg-blue-500]="
-                          mapStore.activeMarker() === code
-                        "
-                        (click)="mapStore.setActiveMarker(code)"
+                        class="p-3 rounded cursor-pointer transition-colors"
+                        [class]="getRowClasses(code)"
+                        (click)="onPostalCodeClick(code)"
                       >
                         <div class="font-medium text-white">
                           {{ code.postalCode }}
@@ -227,6 +207,8 @@ import { MapStore } from '../../core/stores/map.store';
 export class LocationMapPageComponent {
   readonly mapStore = inject(MapStore);
 
+  @ViewChild('mapCanvas') mapCanvas!: MapCanvasComponent;
+
   private readonly itemsPerPage = 50;
   private readonly currentPage = signal(0);
 
@@ -241,6 +223,71 @@ export class LocationMapPageComponent {
       this.visiblePostalCodes().length < this.mapStore.postalCodes().length
     );
   });
+
+  /**
+   * Handle marker clicks - Sync from MAP to TABLE
+   */
+  onMarkerClick(postalCode: PostalCode): void {
+    console.log(
+      '🗺️ Marker clicked:',
+      postalCode.postalCode,
+      postalCode.placeName
+    );
+
+    this.mapStore.setActiveMarker(postalCode);
+
+    this.scrollToPostalCode(postalCode);
+  }
+
+  /**
+   * Handle table row clicks - Sync from TABLE to MAP
+   */
+  onPostalCodeClick(postalCode: PostalCode): void {
+    console.log(
+      '📋 Table row clicked:',
+      postalCode.postalCode,
+      postalCode.placeName
+    );
+
+    this.mapStore.setActiveMarker(postalCode);
+
+    if (this.mapCanvas) {
+      this.mapCanvas.highlightMarker(postalCode);
+    }
+  }
+
+  /**
+   * Get dynamic CSS classes for table rows based on selection state
+   */
+  getRowClasses(code: PostalCode): string {
+    const isActive = this.mapStore.activeMarker() === code;
+
+    if (isActive) {
+      return 'bg-blue-600 hover:bg-blue-500';
+    }
+
+    return 'bg-gray-600 hover:bg-gray-500';
+  }
+
+  /**
+   * Scroll table to show specific postal code (basic implementation)
+   */
+  private scrollToPostalCode(postalCode: PostalCode): void {
+    const allCodes = this.mapStore.postalCodes();
+    const index = allCodes.findIndex(
+      (code) =>
+        code.postalCode === postalCode.postalCode &&
+        code.latitude === postalCode.latitude
+    );
+
+    if (index !== -1) {
+      const currentVisible = this.visiblePostalCodes().length;
+      if (index >= currentVisible) {
+        const neededPage = Math.floor(index / this.itemsPerPage);
+        this.currentPage.set(neededPage);
+      }
+    }
+  }
 
   onCountryChange(event: Event): void {
     this.resetPagination();

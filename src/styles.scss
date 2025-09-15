@@ -1,1 +1,14 @@
-@use "tailwindcss";
+@use 'tailwindcss';
+@import 'leaflet/dist/leaflet.css';
+.map-container {
+  height: 400px;
+  width: 100%;
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+@media (min-width: 768px) {
+  .map-container {
+    height: 500px;
+  }
+}
