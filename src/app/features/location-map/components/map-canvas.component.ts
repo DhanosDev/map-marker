@@ -11,8 +11,11 @@ import {
   computed,
   effect,
   inject,
+  DestroyRef,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
+import { debounceTime, fromEvent } from 'rxjs';
 
 import * as L from 'leaflet';
 
@@ -23,6 +26,21 @@ import {
 } from '../../../core/utils/map-markers.util';
 import { MapStore } from '../../../core/stores/map.store';
 
+/**
+ * Map configuration constants - Centralized for maintainability
+ */
+const MAP_CONFIG = {
+  INITIAL_CENTER: [20, 0] as [number, number],
+  INITIAL_ZOOM: 2,
+  MIN_ZOOM: 2,
+  MAX_ZOOM: 18,
+  MARKER_ZOOM: 10,
+  INIT_DELAY: 100,
+  RESIZE_DEBOUNCE: 250,
+  ANIMATION_DURATION: 0.5,
+  BOUNDS_PADDING: [20, 20] as [number, number],
+} as const;
+
 @Component({
   selector: 'app-map-canvas',
   standalone: true,
@@ -32,6 +50,8 @@ import { MapStore } from '../../../core/stores/map.store';
       @if (isLoading()) {
         <div
           class="absolute inset-0 bg-gray-900/50 flex items-center justify-center z-50"
+          role="status"
+          aria-label="Loading map"
         >
           <div class="text-white">Loading map...</div>
         </div>
@@ -40,12 +60,15 @@ import { MapStore } from '../../../core/stores/map.store';
       @if (mapError()) {
         <div
           class="absolute inset-0 bg-red-900/80 flex items-center justify-center z-50"
+          role="alert"
+          aria-live="assertive"
         >
           <div class="text-center text-white">
             <p class="mb-2">Map failed to load</p>
             <button
-              class="px-3 py-1 bg-red-700 rounded hover:bg-red-600"
+              class="px-3 py-1 bg-red-700 rounded hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-400"
               (click)="retryMapInitialization()"
+              aria-label="Retry map initialization"
             >
               Retry
             </button>
@@ -60,77 +83,168 @@ import { MapStore } from '../../../core/stores/map.store';
         display: block;
         width: 100%;
         height: 100%;
+        contain: layout style paint;
       }
     `,
   ],
 })
 export class MapCanvasComponent implements AfterViewInit, OnDestroy {
+  // ============================================
+  // COMPONENT API
+  // ============================================
+
   @Input() postalCodes = signal<PostalCode[]>([]);
   @Output() markerClicked = new EventEmitter<PostalCode>();
 
+  // ============================================
+  // DEPENDENCY INJECTION
+  // ============================================
+
   private readonly mapStore = inject(MapStore);
+  private readonly destroyRef = inject(DestroyRef);
+
+  // ============================================
+  // COMPONENT STATE
+  // ============================================
 
   readonly isLoading = signal<boolean>(true);
   readonly mapError = signal<string | null>(null);
   private readonly selectedMarkerId = signal<string | null>(null);
 
-  private readonly postalCodesData = computed(() => this.postalCodes());
-  private readonly selectedMarker = computed(() =>
-    this.mapStore.activeMarker()
-  );
+  // ============================================
+  // VIEW REFERENCES
+  // ============================================
 
   @ViewChild('mapContainer', { static: true })
-  private readonly mapContainer!: ElementRef<HTMLElement>;
+  private readonly mapContainer?: ElementRef<HTMLElement>;
+
+  // ============================================
+  // MAP INFRASTRUCTURE
+  // ============================================
 
   private map: L.Map | null = null;
   private markersGroup: L.LayerGroup | null = null;
   private currentMarkers: MapMarker[] = [];
 
+  // ============================================
+  // PERFORMANCE OPTIMIZATIONS
+  // ============================================
+
+  // Memoized icon instances to prevent recreation
+  private readonly normalIconCache = new WeakMap<PostalCode, L.Icon>();
+  private readonly selectedIconCache = new WeakMap<PostalCode, L.DivIcon>();
+
+  // Debounced update functions
+  private pendingMarkerUpdate = false;
+
+  // ============================================
+  // REACTIVE COMPUTED PROPERTIES
+  // ============================================
+
+  /**
+   * Selected marker from store - Optimized computed
+   */
+  private readonly selectedMarker = computed(() =>
+    this.mapStore.activeMarker()
+  );
+
+  // ============================================
+  // LIFECYCLE & EFFECTS
+  // ============================================
+
   constructor() {
+    // Effect: Handle postal codes changes with debouncing
     effect(() => {
-      const codes = this.postalCodesData();
-      if (this.map && codes.length > 0) {
-        this.recreateMarkers(codes);
+      const codes = this.postalCodes();
+      if (this.map && !this.pendingMarkerUpdate) {
+        this.scheduleMarkerUpdate(codes);
       }
     });
 
+    // Effect: Handle marker selection changes
     effect(() => {
       const activeMarker = this.selectedMarker();
       if (this.map && this.currentMarkers.length > 0) {
         this.updateMarkerSelection(activeMarker);
       }
     });
+
+    // Setup window resize handling with proper cleanup
+    this.setupResizeHandler();
   }
 
   ngAfterViewInit(): void {
+    // Delayed initialization to ensure DOM is ready
     setTimeout(() => {
       this.initializeMap();
-    }, 100);
+    }, MAP_CONFIG.INIT_DELAY);
   }
 
   ngOnDestroy(): void {
     this.cleanup();
   }
 
+  // ============================================
+  // PUBLIC API METHODS
+  // ============================================
+
+  /**
+   * Highlight specific marker and center map view
+   * Public API for parent component interaction
+   */
   highlightMarker(postalCode: PostalCode): void {
-    if (!this.map || !postalCode) {
-      console.warn(
-        'Cannot highlight marker: map not ready or invalid postal code'
-      );
-      return;
-    }
+    if (!this.map || !postalCode) return;
 
-    const marker = this.findMarkerByPostalCode(postalCode);
-    if (marker) {
-      this.map.setView([postalCode.latitude, postalCode.longitude], 10);
+    try {
+      const marker = this.findMarkerByPostalCode(postalCode);
+      if (marker) {
+        const currentCenter = this.map.getCenter();
+        const targetLat = postalCode.latitude;
+        const targetLng = postalCode.longitude;
 
-      marker.marker.openPopup();
+        // ✅ Forzar animación con micro-offset si coordenadas son idénticas
+        const latDiff = Math.abs(currentCenter.lat - targetLat);
+        const lngDiff = Math.abs(currentCenter.lng - targetLng);
 
-      const markerId = `${postalCode.postalCode}-${postalCode.latitude}-${postalCode.longitude}`;
-      this.selectedMarkerId.set(markerId);
+        if (latDiff < 0.0001 && lngDiff < 0.0001) {
+          // Micro-offset para forzar animación
+          this.map.flyTo(
+            [targetLat + 0.0001, targetLng + 0.0001],
+            MAP_CONFIG.MARKER_ZOOM,
+            {
+              animate: true,
+              duration: MAP_CONFIG.ANIMATION_DURATION / 2,
+            }
+          );
+
+          setTimeout(
+            () => {
+              this.map!.flyTo([targetLat, targetLng], MAP_CONFIG.MARKER_ZOOM, {
+                animate: true,
+                duration: MAP_CONFIG.ANIMATION_DURATION / 2,
+              });
+            },
+            (MAP_CONFIG.ANIMATION_DURATION * 500) / 2
+          );
+        } else {
+          this.map.flyTo([targetLat, targetLng], MAP_CONFIG.MARKER_ZOOM, {
+            animate: true,
+            duration: MAP_CONFIG.ANIMATION_DURATION,
+          });
+        }
+
+        marker.marker.openPopup();
+        this.selectedMarkerId.set(this.createMarkerId(postalCode));
+      }
+    } catch (error) {
+      console.error('Error highlighting marker:', error);
     }
   }
 
+  /**
+   * Retry map initialization after error
+   * Public API for error recovery
+   */
   retryMapInitialization(): void {
     this.mapError.set(null);
     this.isLoading.set(true);
@@ -138,8 +252,56 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
 
     setTimeout(() => {
       this.initializeMap();
-    }, 100);
+    }, MAP_CONFIG.INIT_DELAY);
   }
+
+  /**
+   * Reset map view to initial coordinates and zoom
+   * Part of back navigation functionality
+   */
+  resetMapView(): void {
+    if (!this.map) {
+      console.warn('Map not initialized, cannot reset view');
+      return;
+    }
+
+    try {
+      this.map.setView(MAP_CONFIG.INITIAL_CENTER, MAP_CONFIG.INITIAL_ZOOM, {
+        animate: true,
+        duration: MAP_CONFIG.ANIMATION_DURATION,
+      });
+      this.map.fitWorld();
+    } catch (error) {
+      console.error('Error resetting map view:', error);
+    }
+  }
+
+  /**
+   * Clear all markers from map
+   * Part of back navigation functionality
+   */
+  clearAllMarkers(): void {
+    try {
+      this.clearMarkers();
+      this.selectedMarkerId.set(null);
+    } catch (error) {
+      console.error('Error clearing markers:', error);
+    }
+  }
+
+  /**
+   * Complete reset to initial state
+   * Primary method called from parent component
+   */
+  resetToInitialState(): void {
+    this.clearAllMarkers();
+    this.resetMapView();
+    this.map?.closePopup();
+  }
+
+  // ============================================
+  // PRIVATE MAP INITIALIZATION
+  // ============================================
 
   private initializeMap(): void {
     try {
@@ -147,40 +309,35 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
       this.cleanupExistingMap();
       this.createMap();
       this.addTileLayer();
-      this.setupMapEvents();
 
       this.isLoading.set(false);
       this.mapError.set(null);
-
-      console.log('Map initialized successfully');
     } catch (error) {
       this.handleMapError('Map initialization failed', error);
     }
   }
 
   private validateContainer(): void {
-    const container = this.mapContainer?.nativeElement;
-    if (!container) {
+    if (!this.mapContainer?.nativeElement) {
       throw new Error('Map container element not available');
     }
   }
 
   private cleanupExistingMap(): void {
-    const container = this.mapContainer.nativeElement;
+    const container = this.mapContainer?.nativeElement;
+    if (!container) return;
 
-    if (container && (container as any)._leaflet_id) {
-      if (this.map) {
-        this.map.remove();
-        this.map = null;
-      }
-
+    if ((container as any)._leaflet_id) {
+      this.map?.remove();
+      this.map = null;
       container.innerHTML = '';
       delete (container as any)._leaflet_id;
     }
   }
 
   private createMap(): void {
-    const container = this.mapContainer.nativeElement;
+    const container = this.mapContainer?.nativeElement;
+    if (!container) return;
 
     this.map = L.map(container, {
       zoomControl: false,
@@ -191,10 +348,10 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
         [90, 180],
       ],
       maxBoundsViscosity: 1.0,
-      center: [20, 0],
-      zoom: 2,
-      minZoom: 2,
-      maxZoom: 18,
+      center: MAP_CONFIG.INITIAL_CENTER,
+      zoom: MAP_CONFIG.INITIAL_ZOOM,
+      minZoom: MAP_CONFIG.MIN_ZOOM,
+      maxZoom: MAP_CONFIG.MAX_ZOOM,
     });
 
     this.map.fitWorld();
@@ -206,28 +363,35 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution:
         '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      maxZoom: 18,
+      maxZoom: MAP_CONFIG.MAX_ZOOM,
       tileSize: 256,
       zoomOffset: 0,
     }).addTo(this.map);
   }
 
-  private setupMapEvents(): void {
-    if (!this.map) return;
+  // ============================================
+  // PERFORMANCE-OPTIMIZED MARKER MANAGEMENT
+  // ============================================
 
-    const resizeHandler = () => {
-      setTimeout(() => {
-        if (this.map) {
-          this.map.invalidateSize();
-        }
-      }, 100);
-    };
+  /**
+   * Schedule marker update with debouncing to prevent thrashing
+   */
+  private scheduleMarkerUpdate(postalCodes: PostalCode[]): void {
+    if (this.pendingMarkerUpdate) return;
 
-    window.addEventListener('resize', resizeHandler);
-    (this.map as any)._resizeHandler = resizeHandler;
+    this.pendingMarkerUpdate = true;
+
+    // Use microtask to batch updates
+    Promise.resolve().then(() => {
+      this.updateMarkers(postalCodes);
+      this.pendingMarkerUpdate = false;
+    });
   }
 
-  private recreateMarkers(postalCodes: PostalCode[]): void {
+  /**
+   * Optimized marker update - handles incremental changes
+   */
+  private updateMarkers(postalCodes: PostalCode[]): void {
     if (!this.map) return;
 
     try {
@@ -239,7 +403,8 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
       this.addMarkers(newMarkers);
       this.fitMarkerBounds(newMarkers);
     } catch (error) {
-      console.error('Failed to recreate markers:', error);
+      console.error('Failed to update markers:', error);
+      this.handleMapError('Marker update failed', error);
     }
   }
 
@@ -247,13 +412,10 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
     if (!this.currentMarkers.length) return;
 
     this.currentMarkers.forEach(({ marker, postalCode }) => {
-      const isSelected =
-        activeMarker &&
-        activeMarker.postalCode === postalCode.postalCode &&
-        activeMarker.latitude === postalCode.latitude &&
-        activeMarker.longitude === postalCode.longitude;
-
-      this.updateMarkerIcon(marker, postalCode, isSelected || false);
+      const isSelected = activeMarker
+        ? this.comparePostalCodes(activeMarker, postalCode)
+        : false;
+      this.updateMarkerIcon(marker, postalCode, isSelected);
     });
   }
 
@@ -263,9 +425,33 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
     isSelected: boolean
   ): void {
     const icon = isSelected
-      ? this.createSelectedIcon()
-      : this.createNormalIcon();
+      ? this.getOrCreateSelectedIcon(postalCode)
+      : this.getOrCreateNormalIcon(postalCode);
     marker.setIcon(icon);
+  }
+
+  // ============================================
+  // MEMOIZED ICON CREATION
+  // ============================================
+
+  private getOrCreateNormalIcon(postalCode: PostalCode): L.Icon {
+    if (this.normalIconCache.has(postalCode)) {
+      return this.normalIconCache.get(postalCode)!;
+    }
+
+    const icon = this.createNormalIcon();
+    this.normalIconCache.set(postalCode, icon);
+    return icon;
+  }
+
+  private getOrCreateSelectedIcon(postalCode: PostalCode): L.DivIcon {
+    if (this.selectedIconCache.has(postalCode)) {
+      return this.selectedIconCache.get(postalCode)!;
+    }
+
+    const icon = this.createSelectedIcon();
+    this.selectedIconCache.set(postalCode, icon);
+    return icon;
   }
 
   private createNormalIcon(): L.Icon {
@@ -302,6 +488,10 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
     });
   }
 
+  // ============================================
+  // MARKER LIFECYCLE MANAGEMENT
+  // ============================================
+
   private clearMarkers(): void {
     if (this.markersGroup && this.map) {
       this.map.removeLayer(this.markersGroup);
@@ -317,22 +507,30 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
     this.currentMarkers = newMarkers;
 
     newMarkers.forEach(({ marker, postalCode }) => {
-      marker.on('click', (e) => {
-        e.originalEvent?.stopPropagation();
-
-        if (this.map) {
-          this.map.setView([postalCode.latitude, postalCode.longitude], 10);
-        }
-
-        this.mapStore.setActiveMarker(postalCode);
-
-        this.markerClicked.emit(postalCode);
-      });
-
+      this.setupMarkerEvents(marker, postalCode);
       this.markersGroup!.addLayer(marker);
     });
 
     this.markersGroup.addTo(this.map);
+  }
+
+  private setupMarkerEvents(marker: L.Marker, postalCode: PostalCode): void {
+    marker.on('click', (e) => {
+      e.originalEvent?.stopPropagation();
+
+      // Update map view
+      this.map?.setView(
+        [postalCode.latitude, postalCode.longitude],
+        MAP_CONFIG.MARKER_ZOOM,
+        { animate: true, duration: MAP_CONFIG.ANIMATION_DURATION }
+      );
+
+      // Update store state
+      this.mapStore.setActiveMarker(postalCode);
+
+      // Emit to parent
+      this.markerClicked.emit(postalCode);
+    });
   }
 
   private fitMarkerBounds(markers: MapMarker[]): void {
@@ -341,24 +539,41 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
     try {
       const group = new L.FeatureGroup(markers.map((m) => m.marker));
       this.map.fitBounds(group.getBounds(), {
-        padding: [20, 20],
-        maxZoom: 10,
+        padding: MAP_CONFIG.BOUNDS_PADDING,
+        maxZoom: MAP_CONFIG.MARKER_ZOOM,
       });
     } catch (error) {
       console.warn('Could not fit marker bounds:', error);
     }
   }
 
+  // ============================================
+  // UTILITY METHODS
+  // ============================================
+
   private findMarkerByPostalCode(
     postalCode: PostalCode
   ): MapMarker | undefined {
-    return this.currentMarkers.find(
-      (marker) =>
-        marker.postalCode.postalCode === postalCode.postalCode &&
-        marker.postalCode.latitude === postalCode.latitude &&
-        marker.postalCode.longitude === postalCode.longitude
+    return this.currentMarkers.find((marker) =>
+      this.comparePostalCodes(marker.postalCode, postalCode)
     );
   }
+
+  private comparePostalCodes(a: PostalCode, b: PostalCode): boolean {
+    return (
+      a.postalCode === b.postalCode &&
+      a.latitude === b.latitude &&
+      a.longitude === b.longitude
+    );
+  }
+
+  private createMarkerId(postalCode: PostalCode): string {
+    return `${postalCode.postalCode}-${postalCode.latitude}-${postalCode.longitude}`;
+  }
+
+  // ============================================
+  // ERROR HANDLING
+  // ============================================
 
   private handleMapError(message: string, error: unknown): void {
     console.error(`${message}:`, error);
@@ -366,17 +581,33 @@ export class MapCanvasComponent implements AfterViewInit, OnDestroy {
     this.isLoading.set(false);
   }
 
+  // ============================================
+  // MEMORY MANAGEMENT & CLEANUP
+  // ============================================
+
+  private setupResizeHandler(): void {
+    if (typeof window === 'undefined') return;
+
+    fromEvent(window, 'resize')
+      .pipe(
+        debounceTime(MAP_CONFIG.RESIZE_DEBOUNCE),
+        takeUntilDestroyed(this.destroyRef)
+      )
+      .subscribe(() => {
+        this.map?.invalidateSize();
+      });
+  }
+
   private cleanup(): void {
-    if (this.map && (this.map as any)._resizeHandler) {
-      window.removeEventListener('resize', (this.map as any)._resizeHandler);
-    }
+    // Cleanup map instance
+    this.map?.remove();
+    this.map = null;
 
-    if (this.map) {
-      this.map.remove();
-      this.map = null;
-    }
-
+    // Clear references
     this.markersGroup = null;
     this.currentMarkers = [];
+
+    // Reset state
+    this.selectedMarkerId.set(null);
   }
 }

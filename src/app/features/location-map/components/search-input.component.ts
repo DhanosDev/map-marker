@@ -29,9 +29,15 @@ export type SearchInputType = 'country' | 'city';
         <!-- Display Input -->
         <button
           type="button"
-          class="w-full px-7 py-3.5 pr-16 bg-search-input text-white font-roboto tracking-search text-[17px] leading-[22px] rounded-full border-0 outline-none appearance-none cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed focus:shadow-search-focus transition-shadow duration-200 text-left"
+          class="w-full px-7 py-3.5 pr-16 bg-search-input text-white font-roboto cursor-pointer tracking-search text-[17px] leading-[22px] rounded-full border-0 outline-none appearance-none cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed focus:shadow-search-focus transition-shadow duration-200 text-left"
           [class.opacity-50]="isLoading()"
           [disabled]="isLoading()"
+          [attr.aria-expanded]="isOpen()"
+          [attr.aria-haspopup]="'listbox'"
+          [attr.aria-label]="
+            type() === 'country' ? 'Select country' : 'Select city'
+          "
+          role="combobox"
           (click)="toggleDropdown()"
           (keydown.enter)="toggleDropdown()"
           (keydown.space)="$event.preventDefault(); toggleDropdown()"
@@ -52,6 +58,7 @@ export type SearchInputType = 'country' | 'city';
             <!-- Loading spinner -->
             <div
               class="animate-spin w-3 h-3 border border-white border-t-transparent rounded-full"
+              aria-label="Loading options"
             ></div>
           } @else {
             <!-- SVG Triangle Icon -->
@@ -63,6 +70,7 @@ export type SearchInputType = 'country' | 'city';
               xmlns="http://www.w3.org/2000/svg"
               class="transition-transform duration-200 ease-in-out"
               [class.rotate-180]="isOpen()"
+              aria-hidden="true"
             >
               <path
                 d="M8.51367 1.5H3.48633L6 3.67773L8.51367 1.5Z"
@@ -78,10 +86,17 @@ export type SearchInputType = 'country' | 'city';
         @if (isOpen() && !isLoading()) {
           <div
             class="absolute top-full left-0 right-0 mt-1 bg-search-input border border-gray-600 rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto"
+            role="listbox"
+            [attr.aria-label]="
+              type() === 'country' ? 'Country options' : 'City options'
+            "
           >
             @if (options().length === 0) {
               <!-- Empty State -->
-              <div class="px-4 py-3 text-gray-400 text-sm text-center">
+              <div
+                class="px-4 py-3 text-gray-400 text-sm text-center"
+                role="status"
+              >
                 @if (type() === 'city') {
                   <span>No hay ciudades disponibles</span>
                 } @else {
@@ -92,8 +107,10 @@ export type SearchInputType = 'country' | 'city';
               @for (option of options(); track option.value) {
                 <button
                   type="button"
-                  class="w-full px-4 py-3 text-left text-white font-roboto tracking-search text-[17px] leading-[22px] hover:bg-white/10 transition-colors duration-200 cursor-pointer border-0 bg-transparent"
+                  class="w-full px-4 py-3 text-left text-white font-roboto tracking-search text-[17px] leading-[22px] hover:bg-white/10 transition-colors duration-200 cursor-pointer border-0 bg-transparent focus:outline-none focus:bg-white/20"
                   [class.bg-blue-600]="option.value === selectedValue()"
+                  role="option"
+                  [attr.aria-selected]="option.value === selectedValue()"
                   (click)="selectOption(option.value)"
                   (keydown.enter)="selectOption(option.value)"
                   (keydown.space)="
@@ -176,7 +193,6 @@ export class SearchInputComponent {
    */
   selectOption(value: string): void {
     this.closeDropdown();
-
     this.valueSelected.emit(value);
   }
 
@@ -192,12 +208,11 @@ export class SearchInputComponent {
    */
   onBlur(): void {
     this.isFocused.set(false);
-
     setTimeout(() => this.closeDropdown(), 150);
   }
 
   /**
-   * Close dropdown when clicking outside (fiable con ElementRef)
+   * Close dropdown when clicking outside
    */
   @HostListener('document:click', ['$event'])
   onDocumentClick(event: Event): void {
